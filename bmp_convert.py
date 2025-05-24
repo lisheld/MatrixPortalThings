@@ -36,53 +36,6 @@ class LEDMatrixConverter:
         image = enhancer.enhance(1.1)
         
         return image
-    
-    def save_palette_bmp(self, image, output_path, colors=256):
-        """
-        Create palette BMP with explicit palette mode for CircuitPython
-        This method ensures the BMP has a proper color palette that CircuitPython can read
-        """
-        print(f"  Converting to {colors}-color palette BMP...")
-        
-        # Ensure we're in RGB mode first
-        if image.mode != 'RGB':
-            image = image.convert('RGB')
-        
-        # Convert to palette mode with specific settings for better LED display
-        palette_image = image.quantize(
-            colors=colors,
-            method=Image.Quantize.MEDIANCUT,  # Good color selection
-            dither=Image.Dither.NONE  # Let CircuitPython handle dithering
-        )
-        
-        # Verify we're in palette mode
-        if palette_image.mode != 'P':
-            print(f"  Warning: Image mode is {palette_image.mode}, forcing to P mode")
-            palette_image = palette_image.convert('P')
-        
-        # Get palette info for debugging
-        palette = palette_image.getpalette()
-        palette_colors = len(palette) // 3 if palette else 0
-        
-        print(f"  Final image mode: {palette_image.mode}")
-        print(f"  Palette colors: {palette_colors}")
-        
-        # Save as BMP with explicit 8-bit palette format
-        # This should create a BMP that CircuitPython recognizes as having a palette
-        palette_image.save(output_path, 'BMP', bits=8)
-        
-        # Verify the saved file
-        try:
-            with Image.open(output_path) as test_img:
-                print(f"  Verified saved BMP: mode={test_img.mode}, size={test_img.size}")
-                if hasattr(test_img, 'getpalette') and test_img.getpalette():
-                    print(f"  ✓ Palette confirmed: {len(test_img.getpalette()) // 3} colors")
-                else:
-                    print(f"  ✗ Warning: No palette detected in saved file")
-        except Exception as e:
-            print(f"  Warning: Could not verify saved file: {e}")
-        
-        print(f"  Saved palette BMP: {output_path}")
 
     def smart_crop_resize(self, image, target_size):
         """Smart crop and resize to maintain aspect ratio and focus on center"""
@@ -119,30 +72,58 @@ class LEDMatrixConverter:
         dithered = image.quantize(colors=64, dither=Image.Dither.FLOYDSTEINBERG)
         return dithered.convert('RGB')
     
-    def create_led_optimized_palette(self, image, colors=256):
-        """Create a palette specifically optimized for LED matrices"""
+    def save_palette_bmp(self, image, output_path, colors=256, use_spatial_dithering=False):
+        """Create palette BMP with explicit palette mode for CircuitPython"""
+        print(f"  Converting to {colors}-color palette BMP...")
         
-        # First, optimize the image for LED display
-        led_optimized = self.optimize_for_led(image.copy())
+        # Ensure we're in RGB mode first
+        if image.mode != 'RGB':
+            image = image.convert('RGB')
         
-        # Create palette using the LED-optimized version
-        palette_image = led_optimized.quantize(
+        # Choose dithering method based on parameter
+        if use_spatial_dithering:
+            dither_method = Image.Dither.FLOYDSTEINBERG
+            print(f"  Using Floyd-Steinberg spatial dithering for better color accuracy")
+        else:
+            dither_method = Image.Dither.NONE
+        
+        # Convert to palette mode
+        palette_image = image.quantize(
             colors=colors,
             method=Image.Quantize.MEDIANCUT,
-            dither=Image.Dither.NONE  # No dithering - let CircuitPython handle it
+            dither=dither_method
         )
         
-        return palette_image
-    
-    def convert_image(self, input_path, output_path, apply_dithering=False, quantize=False, palette_colors=256):
-        """Convert a single image to LED-optimized palette BMP"""
+        # Verify we're in palette mode
+        if palette_image.mode != 'P':
+            print(f"  Warning: Image mode is {palette_image.mode}, forcing to P mode")
+            palette_image = palette_image.convert('P')
         
+        # Save as BMP with explicit 8-bit palette format
+        palette_image.save(output_path, 'BMP', bits=8)
+        
+        # Verify the saved file
+        try:
+            with Image.open(output_path) as test_img:
+                print(f"  ✓ Saved: {test_img.mode} {test_img.size}")
+                if hasattr(test_img, 'getpalette') and test_img.getpalette():
+                    palette_colors = len(test_img.getpalette()) // 3
+                    print(f"  ✓ Palette: {palette_colors} colors")
+        except Exception as e:
+            print(f"  Warning: Could not verify saved file: {e}")
+
+    def generate_github_url(self, filename, use_spatial_dithering):
+        """Generate the correct GitHub URL for a BMP file"""
+        folder_name = "bmp_dither" if use_spatial_dithering else "bmp"
+        return f"https://raw.githubusercontent.com/lisheld/MatrixPortalThings/refs/heads/main/{folder_name}/{filename}"
+
+    def process_single_image(self, input_path, output_path, apply_dithering=False, quantize=False, palette_colors=256, spatial_dither=False):
+        """Process a single image file"""
         try:
             print(f"Processing: {input_path}")
             
-            # Open image
+            # Open and convert image
             with Image.open(input_path) as image:
-                # Convert to RGB if necessary
                 if image.mode != 'RGB':
                     image = image.convert('RGB')
                 
@@ -152,7 +133,11 @@ class LEDMatrixConverter:
                 image = self.smart_crop_resize(image, self.matrix_size)
                 print(f"  Resized to: {image.width}x{image.height}")
                 
-                # Optional pre-processing before palette creation
+                # Apply LED optimizations
+                image = self.optimize_for_led(image)
+                print(f"  Applied LED optimizations")
+                
+                # Optional pre-processing
                 if quantize:
                     image = self.quantize_colors(image, colors=palette_colors)
                     print(f"  Applied color quantization to {palette_colors} colors")
@@ -161,69 +146,102 @@ class LEDMatrixConverter:
                     image = self.apply_led_dithering(image)
                     print(f"  Applied LED dithering")
                 
-                # Always save as palette BMP for CircuitPython compatibility
-                self.save_palette_bmp(image, output_path, colors=palette_colors)
+                # Save as palette BMP
+                self.save_palette_bmp(image, output_path, colors=palette_colors, use_spatial_dithering=spatial_dither)
+                
+                # Show GitHub URL
+                github_url = self.generate_github_url(output_path.name, spatial_dither)
+                print(f"  GitHub URL: \"{github_url}\"")
                 
                 return True
                 
         except Exception as e:
-            print(f"  Error processing {input_path}: {e}")
-            import traceback
-            traceback.print_exception(type(e), e, e.__traceback__)
+            print(f"  ERROR: {e}")
             return False
-    
-    def batch_convert(self, input_dir, output_dir, apply_dithering=False, quantize=False, palette_colors=256):
-        """Convert all supported images in a directory"""
+
+    def convert_images(self, input_path, output_path, apply_dithering=False, quantize=False, palette_colors=256, spatial_dither=False):
+        """Convert single file or batch of files"""
         
-        input_path = Path(input_dir)
-        output_path = Path(output_dir)
+        input_path = Path(input_path)
+        output_path = Path(output_path)
         
-        # Create output directory if it doesn't exist
-        output_path.mkdir(parents=True, exist_ok=True)
-        
-        # Supported formats
-        supported_formats = {'.jpg', '.jpeg', '.png', '.heic', '.heif', '.bmp', '.tiff', '.webp'}
-        
-        # Find all supported images
-        image_files = []
-        for ext in supported_formats:
-            image_files.extend(input_path.glob(f'*{ext}'))
-            image_files.extend(input_path.glob(f'*{ext.upper()}'))
-        
-        if not image_files:
-            print(f"No supported image files found in {input_dir}")
+        if input_path.is_file():
+            # Single file conversion
+            if output_path.is_dir() or not output_path.suffix:
+                output_file = output_path / f"{input_path.stem}.bmp"
+            else:
+                output_file = output_path
+            
+            success = self.process_single_image(
+                input_path, output_file, apply_dithering, quantize, palette_colors, spatial_dither
+            )
+            
+            if success:
+                print(f"\n✓ Conversion successful!")
+            else:
+                print(f"\n✗ Conversion failed!")
+            
             return
         
-        print(f"Found {len(image_files)} images to convert")
-        print(f"Output directory: {output_path}")
-        print(f"Palette colors: {palette_colors}")
-        print(f"Dithering: {apply_dithering}")
-        print(f"Quantize: {quantize}")
-        print("-" * 50)
+        elif input_path.is_dir():
+            # Batch conversion
+            output_path.mkdir(parents=True, exist_ok=True)
+            
+            # Find all supported images
+            supported_formats = {'.jpg', '.jpeg', '.png', '.heic', '.heif', '.bmp', '.tiff', '.webp'}
+            image_files = []
+            for ext in supported_formats:
+                image_files.extend(input_path.glob(f'*{ext}'))
+                image_files.extend(input_path.glob(f'*{ext.upper()}'))
+            
+            if not image_files:
+                print(f"No supported image files found in {input_path}")
+                return
+            
+            print(f"Found {len(image_files)} images to convert")
+            print(f"Output directory: {output_path}")
+            print(f"Settings: colors={palette_colors}, spatial_dither={spatial_dither}")
+            print("-" * 60)
+            
+            # Process all images
+            success_count = 0
+            successful_files = []
+            
+            for img_file in image_files:
+                output_file = output_path / f"{img_file.stem}.bmp"
+                if self.process_single_image(img_file, output_file, apply_dithering, quantize, palette_colors, spatial_dither):
+                    success_count += 1
+                    successful_files.append(img_file)
+                print()  # Add spacing between files
+            
+            # Show results and URLs
+            print("-" * 60)
+            print(f"Conversion complete: {success_count}/{len(image_files)} images successful")
+            
+            if successful_files:
+                folder_name = "bmp_dither" if spatial_dither else "bmp"
+                print(f"\nExample URLs for CircuitPython (update your IMAGE_URLS list):")
+                
+                for img_file in sorted(successful_files)[:4]:  # Show first 4
+                    bmp_name = f"{img_file.stem}.bmp"
+                    github_url = self.generate_github_url(bmp_name, spatial_dither)
+                    print(f'    "{github_url}",')
+                
+                if len(successful_files) > 4:
+                    print(f"    ... and {len(successful_files) - 4} more files")
+                
+                print(f"\nAll files are in the '{folder_name}' folder on GitHub")
         
-        success_count = 0
-        for img_file in image_files:
-            output_file = output_path / f"{img_file.stem}.bmp"
-            if self.convert_image(img_file, output_file, apply_dithering, quantize, palette_colors):
-                success_count += 1
-            print()  # Add spacing between files
-        
-        print("-" * 50)
-        print(f"Conversion complete: {success_count}/{len(image_files)} images successful")
-        
-        # Show some example URLs for testing
-        if success_count > 0:
-            print(f"\nExample URLs for CircuitPython (update your IMAGE_URLS list):")
-            for img_file in sorted(image_files)[:4]:  # Show first 4
-                bmp_name = f"{img_file.stem}.bmp"
-                print(f'    "https://your-github-repo/path/to/{bmp_name}",')
+        else:
+            print(f"Error: {input_path} is not a valid file or directory")
 
 def main():
     parser = argparse.ArgumentParser(description='Convert images to LED matrix optimized palette BMPs')
     parser.add_argument('input', help='Input file or directory')
-    parser.add_argument('output', help='Output file or directory')
+    parser.add_argument('--output', help='Output directory (optional - will auto-create /bmp or /bmp_dither)')
     parser.add_argument('--dither', action='store_true', help='Apply LED-optimized dithering')
     parser.add_argument('--quantize', action='store_true', help='Reduce color palette before final conversion')
+    parser.add_argument('--spatial-dither', action='store_true', help='Use Floyd-Steinberg spatial dithering')
     parser.add_argument('--colors', type=int, default=256, help='Number of colors in final palette (default: 256)')
     parser.add_argument('--brightness', type=float, default=0.7, help='Brightness factor (0.1-1.0)')
     parser.add_argument('--contrast', type=float, default=1.2, help='Contrast factor (0.5-2.0)')
@@ -236,33 +254,41 @@ def main():
         print("Error: --colors must be between 2 and 256")
         sys.exit(1)
     
-    if args.brightness < 0.1 or args.brightness > 1.0:
+    if not (0.1 <= args.brightness <= 1.0):
         print("Error: --brightness must be between 0.1 and 1.0")
         sys.exit(1)
         
-    if args.contrast < 0.5 or args.contrast > 2.0:
+    if not (0.5 <= args.contrast <= 2.0):
         print("Error: --contrast must be between 0.5 and 2.0")
         sys.exit(1)
     
-    # Create converter with custom settings
+    # Auto-determine output path if not specified
+    if args.output:
+        output_path = args.output
+    else:
+        if args.spatial_dither:
+            output_path = "bmp_dither"
+            print("Auto-selected output: bmp_dither/ (for spatially dithered images)")
+        else:
+            output_path = "bmp"
+            print("Auto-selected output: bmp/ (for clean, undithered images)")
+    
+    # Create converter
     converter = LEDMatrixConverter(
         matrix_size=tuple(args.size),
         brightness_factor=args.brightness,
         contrast_factor=args.contrast
     )
     
-    input_path = Path(args.input)
-    output_path = Path(args.output)
-    
-    if input_path.is_file():
-        # Single file conversion
-        converter.convert_image(input_path, output_path, args.dither, args.quantize, args.colors)
-    elif input_path.is_dir():
-        # Batch conversion
-        converter.batch_convert(input_path, output_path, args.dither, args.quantize, args.colors)
-    else:
-        print(f"Error: {args.input} is not a valid file or directory")
-        sys.exit(1)
+    # Convert images
+    converter.convert_images(
+        args.input, 
+        output_path, 
+        args.dither, 
+        args.quantize, 
+        args.colors, 
+        args.spatial_dither
+    )
 
 if __name__ == "__main__":
     main()
