@@ -103,6 +103,8 @@ class LEDMatrixConverter:
                     print(f"  Applied LED dithering")
                 
                 # Save as 24-bit BMP
+
+                image = image.quantize(colors=256)  # Create a 256-color palette
                 image.save(output_path, 'BMP')
                 print(f"  Saved: {output_path}")
                 
