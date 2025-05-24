@@ -1,0 +1,36 @@
+# Secrets and credentials
+secrets.py
+settings.toml
+
+# Python cache and temporary files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# CircuitPython specific
+.fseventsd/
+.metadata_never_index
+.Trashes
+boot_out.txt
+
+# Log files
+*.log 
