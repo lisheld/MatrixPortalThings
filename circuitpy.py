@@ -9,6 +9,7 @@ import adafruit_imageload
 from adafruit_matrixportal.matrix import Matrix
 import gc
 import os
+import io
 
 # Import WiFi credentials from settings.toml (CircuitPython's recommended approach)
 try:
@@ -37,13 +38,30 @@ CYCLE_TIME = 10  # Change to 300 (5 minutes) once working
 class PhotoDisplay:
     def __init__(self):
         print("Initializing MatrixPortal...")
-        # Initialize matrix display with 4-bit color depth
+        # Initialize matrix display with 4-bit for temporal dithering
         self.matrix = Matrix(width=64, height=64, bit_depth=4)
         self.display = self.matrix.display
         
         # Keep auto-refresh on for smoother operation
         self.display.auto_refresh = True
-        print("Matrix display initialized")
+        print("Matrix display initialized with temporal dithering")
+        
+        # Temporal dithering variables
+        self.dither_frame = 0
+        self.dither_patterns = {
+            # Pattern definitions: (frame0, frame1, frame2, frame3)
+            # Each represents which brightness offset to use
+            'light': (0, 1, 0, 1),  # ABAB - 50/50 mix
+            'medium': (0, 0, 0, 1), # AAAB - 75/25 mix  
+            'heavy': (0, 1, 1, 1),  # ABBB - 25/75 mix
+        }
+        self.current_bitmap_data = None
+        self.current_group = None
+        
+        # Timing variables
+        self.last_image_time = None
+        self.last_dither_time = 0
+        self.dither_interval = 1.0 / 15.0  # 15 Hz dithering (4 frames at 60fps)
         
         # Show a test pattern first
         self.show_test_pattern()
@@ -57,8 +75,7 @@ class PhotoDisplay:
         self.requests = adafruit_requests.Session(pool, context)
         
         self.current_image_index = 0
-        self.current_group = None  # Keep track of current display group
-        self.dither_frame = 0  # Track dithering frame
+        
         print("Initialization complete!")
         
     def show_test_pattern(self):
@@ -87,9 +104,13 @@ class PhotoDisplay:
         
     def connect_wifi(self):
         print("Connecting to WiFi...")
-        wifi.radio.connect(WIFI_SSID, WIFI_PASSWORD)
-        print(f"Connected to {WIFI_SSID}")
-        print(f"IP: {wifi.radio.ipv4_address}")
+        try:
+            wifi.radio.connect(WIFI_SSID, WIFI_PASSWORD)
+            print(f"Connected to {WIFI_SSID}")
+            print(f"IP: {wifi.radio.ipv4_address}")
+        except Exception as e:
+            print(f"WiFi connection failed: {e}")
+            raise
     
     def download_and_display_image(self, url):
         print(f"Downloading: {url}")
@@ -103,7 +124,7 @@ class PhotoDisplay:
             if response.status_code == 200:
                 print("Processing image data directly from memory...")
                 
-                # Instead of saving to file, process directly from memory
+                # Process directly from memory
                 image_data = response.content
                 response.close()
                 
@@ -124,17 +145,11 @@ class PhotoDisplay:
         print("Garbage collection completed")
     
     def display_image_from_data(self, image_data):
-        """Display BMP image with optimized color handling and dithering"""
+        """Display BMP image with temporal dithering for better colors"""
         try:
             print(f"Processing image data: {len(image_data)} bytes")
             
-            # Brief black screen for smooth transition (shorter duration)
-            print("Showing transition screen...")
-            self.show_black_screen()
-            time.sleep(0.05)  # Shorter black screen to maintain colors
-            
             # Create a BytesIO-like object for adafruit_imageload
-            import io
             image_file = io.BytesIO(image_data)
             
             # Load image from memory
@@ -143,7 +158,10 @@ class PhotoDisplay:
             print(f"Bitmap loaded: {bitmap.width}x{bitmap.height}")
             print(f"Palette colors: {len(palette) if palette else 'No palette'}")
             
-            # Create sprite with proper color handling
+            # Store bitmap data for dithering
+            self.current_bitmap_data = (bitmap, palette)
+            
+            # Create initial sprite with original palette
             sprite = displayio.TileGrid(bitmap, pixel_shader=palette)
             
             # Create new group
@@ -155,93 +173,120 @@ class PhotoDisplay:
             self.display.root_group = group
             self.current_group = group
             
-            print("Image displayed successfully!")
+            # Reset dither frame
+            self.dither_frame = 0
+            
+            print("Image displayed with temporal dithering enabled!")
             
         except Exception as e:
             print(f"Error displaying image from data: {e}")
             import traceback
             traceback.print_exception(type(e), e, e.__traceback__)
     
-    def show_black_screen(self):
-        """Show a black screen for smooth transitions"""
+    def create_dithered_palette(self, original_palette, brightness_offset=0):
+        """Create a dithered version of the palette"""
+        if not original_palette:
+            return None
+            
         try:
-            # Create a black rectangle covering the entire display
-            import vectorio
+            dithered_palette = displayio.Palette(len(original_palette))
             
-            black_rect = vectorio.Rectangle(
-                pixel_shader=displayio.Palette(1),
-                width=64,
-                height=64,
-                x=0,
-                y=0
-            )
-            # Make the palette color black
-            black_rect.pixel_shader[0] = 0x000000
-            
-            group = displayio.Group()
-            group.append(black_rect)
-            self.display.root_group = group
+            for i in range(len(original_palette)):
+                color = original_palette[i]
+                
+                # Extract RGB components
+                r = (color >> 16) & 0xFF
+                g = (color >> 8) & 0xFF
+                b = color & 0xFF
+                
+                # Apply brightness offset for dithering
+                # Smaller offset for subtler dithering
+                offset = brightness_offset * 4  # Scale the offset
+                r = max(0, min(255, r + offset))
+                g = max(0, min(255, g + offset))
+                b = max(0, min(255, b + offset))
+                
+                dithered_palette[i] = (r << 16) | (g << 8) | b
+                
+            return dithered_palette
             
         except Exception as e:
-            print(f"Could not show black screen: {e}")
-            # Fallback - just clear display
-            self.display.root_group = displayio.Group()
+            print(f"Error creating dithered palette: {e}")
+            return original_palette
+    
+    def update_dither_frame(self):
+        """Update the dithering frame counter and refresh display if needed"""
+        if self.current_bitmap_data is None or self.current_group is None:
+            return
+            
+        try:
+            self.dither_frame = (self.dither_frame + 1) % 4
+            
+            # Determine brightness offset based on dither pattern
+            # Using 'light' pattern (ABAB) for now
+            pattern = self.dither_patterns['light']
+            brightness_offset = 1 if pattern[self.dither_frame] else -1
+            
+            # Get the current bitmap and original palette
+            bitmap, original_palette = self.current_bitmap_data
+            
+            # Create dithered palette
+            dithered_palette = self.create_dithered_palette(original_palette, brightness_offset)
+            
+            if dithered_palette and len(self.current_group) > 0:
+                # Update the pixel shader of the current sprite
+                current_sprite = self.current_group[0]
+                if hasattr(current_sprite, 'pixel_shader'):
+                    current_sprite.pixel_shader = dithered_palette
+                    
+        except Exception as e:
+            print(f"Dithering update error: {e}")
 
-    def display_image(self, filename):
-        try:
-            print(f"Loading image file: {filename}")
-            
-            # Check file size
-            import os
-            try:
-                file_size = os.stat(filename)[6]
-                print(f"File size: {file_size} bytes")
-            except:
-                print("Could not get file size")
-            
-            # Clear current display
-            print("Clearing display...")
-            self.display.root_group = displayio.Group()
-            
-            # Load image
-            print("Loading bitmap...")
-            bitmap, palette = adafruit_imageload.load(filename)
-            print(f"Bitmap loaded: {bitmap.width}x{bitmap.height}")
-            
-            # Create sprite
-            print("Creating sprite...")
-            sprite = displayio.TileGrid(bitmap, pixel_shader=palette)
-            
-            # Add to display group
-            print("Adding to display group...")
-            group = displayio.Group()
-            group.append(sprite)
-            self.display.root_group = group
-            
-            print("Image displayed successfully!")
-            
-        except Exception as e:
-            print(f"Error displaying image: {e}")
-            import traceback
-            traceback.print_exception(type(e), e, e.__traceback__)
+    def change_image(self):
+        """Change to the next image"""
+        # Get current image URL
+        url = IMAGE_URLS[self.current_image_index]
+        print(f"Processing image {self.current_image_index + 1}/{len(IMAGE_URLS)}: {url}")
+        
+        # Download and display
+        self.download_and_display_image(url)
+        
+        # Move to next image
+        self.current_image_index = (self.current_image_index + 1) % len(IMAGE_URLS)
+        
+        # Record time
+        self.last_image_time = time.monotonic()
+        
+        print(f"Image displayed. Next change in {CYCLE_TIME} seconds...")
     
     def run(self):
-        print("Starting photo slideshow...")
+        print("Starting photo slideshow with temporal dithering...")
+        
+        # Show first image immediately
+        self.change_image()
         
         while True:
-            # Get current image URL
-            url = IMAGE_URLS[self.current_image_index]
-            print(f"Processing image {self.current_image_index + 1}/{len(IMAGE_URLS)}: {url}")
-            
-            # Download and display
-            self.download_and_display_image(url)
-            
-            # Move to next image
-            self.current_image_index = (self.current_image_index + 1) % len(IMAGE_URLS)
-            
-            # Wait before next image
-            print(f"Image displayed. Waiting {CYCLE_TIME} seconds before next image...")
-            time.sleep(CYCLE_TIME)
+            try:
+                current_time = time.monotonic()
+                
+                # Handle dithering updates
+                if current_time - self.last_dither_time >= self.dither_interval:
+                    self.update_dither_frame()
+                    self.last_dither_time = current_time
+                
+                # Check if it's time to change images
+                if self.last_image_time and (current_time - self.last_image_time >= CYCLE_TIME):
+                    self.change_image()
+                
+                # Small sleep to prevent busy waiting
+                time.sleep(0.01)
+                
+            except KeyboardInterrupt:
+                print("Slideshow stopped by user")
+                break
+            except Exception as e:
+                print(f"Error in main loop: {e}")
+                time.sleep(1)  # Wait before retrying
 
 # Create and run the photo display
 if __name__ == "__main__":
@@ -250,4 +295,8 @@ if __name__ == "__main__":
         photo_display.run()
     except Exception as e:
         print(f"Main error: {e}")
-        # Show error on display or restart
+        import traceback
+        traceback.print_exception(type(e), e, e.__traceback__)
+        # Keep the device from restarting immediately
+        while True:
+            time.sleep(60)
