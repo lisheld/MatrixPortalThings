@@ -156,12 +156,22 @@ class PhotoDisplay:
             print("Loading bitmap from memory...")
             bitmap, palette = adafruit_imageload.load(image_file)
             print(f"Bitmap loaded: {bitmap.width}x{bitmap.height}")
-            print(f"Palette colors: {len(palette) if palette else 'No palette'}")
             
-            # Store bitmap data for dithering
-            self.current_bitmap_data = (bitmap, palette)
+            # Check if we have a real palette or a ColorConverter
+            palette_type = type(palette).__name__
+            print(f"Pixel shader type: {palette_type}")
             
-            # Create initial sprite with original palette
+            # Handle different pixel shader types
+            if hasattr(palette, '__len__'):
+                print(f"Palette colors: {len(palette)}")
+                # Store bitmap data for dithering (only if we have a real palette)
+                self.current_bitmap_data = (bitmap, palette)
+            else:
+                print("Using ColorConverter (24-bit direct color)")
+                # For ColorConverter, we can't do palette-based dithering
+                self.current_bitmap_data = None
+            
+            # Create initial sprite with original palette/color converter
             sprite = displayio.TileGrid(bitmap, pixel_shader=palette)
             
             # Create new group
@@ -176,7 +186,10 @@ class PhotoDisplay:
             # Reset dither frame
             self.dither_frame = 0
             
-            print("Image displayed with temporal dithering enabled!")
+            if self.current_bitmap_data is None:
+                print("Image displayed (24-bit direct color - temporal dithering disabled)")
+            else:
+                print("Image displayed with temporal dithering enabled!")
             
         except Exception as e:
             print(f"Error displaying image from data: {e}")
@@ -216,6 +229,7 @@ class PhotoDisplay:
     
     def update_dither_frame(self):
         """Update the dithering frame counter and refresh display if needed"""
+        # Only do temporal dithering if we have palette data
         if self.current_bitmap_data is None or self.current_group is None:
             return
             
@@ -230,14 +244,16 @@ class PhotoDisplay:
             # Get the current bitmap and original palette
             bitmap, original_palette = self.current_bitmap_data
             
-            # Create dithered palette
-            dithered_palette = self.create_dithered_palette(original_palette, brightness_offset)
-            
-            if dithered_palette and len(self.current_group) > 0:
-                # Update the pixel shader of the current sprite
-                current_sprite = self.current_group[0]
-                if hasattr(current_sprite, 'pixel_shader'):
-                    current_sprite.pixel_shader = dithered_palette
+            # Only proceed if we have a real palette (not ColorConverter)
+            if hasattr(original_palette, '__len__'):
+                # Create dithered palette
+                dithered_palette = self.create_dithered_palette(original_palette, brightness_offset)
+                
+                if dithered_palette and len(self.current_group) > 0:
+                    # Update the pixel shader of the current sprite
+                    current_sprite = self.current_group[0]
+                    if hasattr(current_sprite, 'pixel_shader'):
+                        current_sprite.pixel_shader = dithered_palette
                     
         except Exception as e:
             print(f"Dithering update error: {e}")
