@@ -51,12 +51,13 @@ class PhotoDisplay:
         self.dither_patterns = {
             # Pattern definitions: (frame0, frame1, frame2, frame3)
             # Each represents which brightness offset to use
-            'light': (0, 1, 0, 1),  # ABAB - 50/50 mix
-            'medium': (0, 0, 0, 1), # AAAB - 75/25 mix  
-            'heavy': (0, 1, 1, 1),  # ABBB - 25/75 mix
+            'light': (0, 1, 0, 1),    # ABAB - 50/50 mix - for high contrast images
+            'medium': (0, 0, 0, 1),   # AAAB - 75/25 mix - for medium range images
+            'heavy': (0, 1, 1, 1),    # ABBB - 25/75 mix - for low contrast images
         }
         self.current_bitmap_data = None
         self.current_group = None
+        self.current_dither_pattern = 'medium'  # Default pattern
         
         # Timing variables
         self.last_image_time = None
@@ -112,6 +113,102 @@ class PhotoDisplay:
             print(f"WiFi connection failed: {e}")
             raise
     
+    def analyze_color_range(self, bitmap, palette, sample_size=100):
+        """
+        Analyze the color range of an image to determine appropriate dithering pattern.
+        Returns 'light', 'medium', or 'heavy' based on color distribution.
+        """
+        try:
+            if not palette or not hasattr(palette, '__len__'):
+                print("No palette available for analysis, using medium dithering")
+                return 'medium'
+            
+            print("Analyzing image color range...")
+            
+            # Sample pixels from the bitmap to analyze color distribution
+            width = bitmap.width
+            height = bitmap.height
+            
+            # Calculate step size for sampling
+            step_x = max(1, width // int(sample_size ** 0.5))
+            step_y = max(1, height // int(sample_size ** 0.5))
+            
+            color_frequencies = {}
+            brightness_values = []
+            
+            # Sample pixels across the image
+            for y in range(0, height, step_y):
+                for x in range(0, width, step_x):
+                    try:
+                        # Get pixel value (palette index)
+                        pixel_index = bitmap[x, y]
+                        
+                        # Count color frequency
+                        color_frequencies[pixel_index] = color_frequencies.get(pixel_index, 0) + 1
+                        
+                        # Get actual color from palette and calculate brightness
+                        if pixel_index < len(palette):
+                            color = palette[pixel_index]
+                            # Calculate perceived brightness (luminance formula)
+                            r = (color >> 16) & 0xFF
+                            g = (color >> 8) & 0xFF
+                            b = color & 0xFF
+                            brightness = (0.299 * r + 0.587 * g + 0.114 * b) / 255.0
+                            brightness_values.append(brightness)
+                            
+                    except (IndexError, TypeError):
+                        continue
+            
+            if not brightness_values:
+                print("Could not analyze colors, using medium dithering")
+                return 'medium'
+            
+            # Calculate statistics
+            min_brightness = min(brightness_values)
+            max_brightness = max(brightness_values)
+            brightness_range = max_brightness - min_brightness
+            avg_brightness = sum(brightness_values) / len(brightness_values)
+            
+            # Count unique colors used
+            unique_colors = len(color_frequencies)
+            total_palette_colors = len(palette)
+            color_usage_ratio = unique_colors / total_palette_colors if total_palette_colors > 0 else 0
+            
+            print(f"Color analysis results:")
+            print(f"  Brightness range: {brightness_range:.3f} (min: {min_brightness:.3f}, max: {max_brightness:.3f})")
+            print(f"  Average brightness: {avg_brightness:.3f}")
+            print(f"  Unique colors used: {unique_colors}/{total_palette_colors} ({color_usage_ratio:.2%})")
+            
+            # Determine dithering pattern based on analysis
+            # High contrast images (wide brightness range) -> light dithering
+            # Low contrast images (narrow brightness range) -> heavy dithering
+            # Medium contrast -> medium dithering
+            
+            if brightness_range > 0.7:  # High contrast
+                pattern = 'light'
+                reason = f"high contrast (range: {brightness_range:.3f})"
+            elif brightness_range < 0.3:  # Low contrast
+                pattern = 'heavy'
+                reason = f"low contrast (range: {brightness_range:.3f})"
+            else:  # Medium contrast
+                pattern = 'medium'
+                reason = f"medium contrast (range: {brightness_range:.3f})"
+            
+            # Also consider color diversity
+            if color_usage_ratio < 0.1 and pattern != 'heavy':  # Very few colors used
+                pattern = 'heavy'
+                reason += ", limited color palette"
+            elif color_usage_ratio > 0.5 and pattern != 'light':  # Many colors used
+                pattern = 'light'
+                reason += ", diverse color palette"
+            
+            print(f"Selected dithering pattern: {pattern} ({reason})")
+            return pattern
+            
+        except Exception as e:
+            print(f"Error analyzing color range: {e}")
+            return 'medium'  # Default fallback
+    
     def download_and_display_image(self, url):
         print(f"Downloading: {url}")
         try:
@@ -145,7 +242,7 @@ class PhotoDisplay:
         print("Garbage collection completed")
     
     def display_image_from_data(self, image_data):
-        """Display BMP image with temporal dithering for better colors"""
+        """Display BMP image with adaptive temporal dithering for better colors"""
         try:
             print(f"Processing image data: {len(image_data)} bytes")
             
@@ -161,17 +258,30 @@ class PhotoDisplay:
             palette_type = type(palette).__name__
             print(f"Pixel shader type: {palette_type}")
             
-            # Handle different pixel shader types
-            if hasattr(palette, '__len__'):
-                print(f"Palette colors: {len(palette)}")
-                # Store bitmap data for dithering (only if we have a real palette)
-                self.current_bitmap_data = (bitmap, palette)
-            else:
-                print("Using ColorConverter (24-bit direct color)")
-                # For ColorConverter, we can't do palette-based dithering
-                self.current_bitmap_data = None
+            # More detailed debugging
+            print(f"Palette object: {palette}")
+            print(f"Has __len__: {hasattr(palette, '__len__')}")
             
-            # Create initial sprite with original palette/color converter
+            # Check if it's a CircuitPython Palette object
+            is_palette = palette_type == 'Palette' or 'Palette' in str(type(palette))
+            
+            if is_palette:
+                print("✓ Valid CircuitPython Palette found - analyzing for adaptive dithering")
+                
+                # Analyze the image to determine optimal dithering pattern
+                self.current_dither_pattern = self.analyze_color_range(bitmap, palette)
+                
+                self.current_bitmap_data = (bitmap, palette)
+                dithering_enabled = True
+            else:
+                print("✗ No valid palette found - dithering disabled")
+                print(f"  Palette type: {type(palette)}")
+                print(f"  Palette dir: {[attr for attr in dir(palette) if not attr.startswith('_')]}")
+                self.current_bitmap_data = None
+                self.current_dither_pattern = 'medium'  # Reset to default
+                dithering_enabled = False
+            
+            # Create initial sprite with palette/color converter
             sprite = displayio.TileGrid(bitmap, pixel_shader=palette)
             
             # Create new group
@@ -186,41 +296,58 @@ class PhotoDisplay:
             # Reset dither frame
             self.dither_frame = 0
             
-            if self.current_bitmap_data is None:
-                print("Image displayed (24-bit direct color - temporal dithering disabled)")
+            if dithering_enabled:
+                print(f"Image displayed with adaptive temporal dithering (pattern: {self.current_dither_pattern})!")
             else:
-                print("Image displayed with temporal dithering enabled!")
+                print("Image displayed (24-bit direct color - temporal dithering disabled)")
             
         except Exception as e:
             print(f"Error displaying image from data: {e}")
             import traceback
             traceback.print_exception(type(e), e, e.__traceback__)
-    
+            
     def create_dithered_palette(self, original_palette, brightness_offset=0):
         """Create a dithered version of the palette"""
         if not original_palette:
             return None
             
         try:
-            dithered_palette = displayio.Palette(len(original_palette))
+            # For CircuitPython Palette objects, we need to access colors differently
+            # Try to determine palette size by checking available colors
+            palette_size = 256  # Default assumption for BMP palettes
             
-            for i in range(len(original_palette)):
-                color = original_palette[i]
-                
-                # Extract RGB components
-                r = (color >> 16) & 0xFF
-                g = (color >> 8) & 0xFF
-                b = color & 0xFF
-                
-                # Apply brightness offset for dithering
-                # Smaller offset for subtler dithering
-                offset = brightness_offset * 4  # Scale the offset
-                r = max(0, min(255, r + offset))
-                g = max(0, min(255, g + offset))
-                b = max(0, min(255, b + offset))
-                
-                dithered_palette[i] = (r << 16) | (g << 8) | b
-                
+            # Create new palette with same size
+            dithered_palette = displayio.Palette(palette_size)
+            
+            # Copy and modify colors
+            for i in range(palette_size):
+                try:
+                    color = original_palette[i]
+                    
+                    # Extract RGB components
+                    r = (color >> 16) & 0xFF
+                    g = (color >> 8) & 0xFF
+                    b = color & 0xFF
+                    
+                    # Apply brightness offset for dithering
+                    # Adjust offset magnitude based on dithering pattern
+                    if self.current_dither_pattern == 'light':
+                        offset = brightness_offset * 2  # Subtle dithering for high contrast
+                    elif self.current_dither_pattern == 'heavy':
+                        offset = brightness_offset * 8  # Strong dithering for low contrast
+                    else:  # medium
+                        offset = brightness_offset * 4  # Default dithering
+                    
+                    r = max(0, min(255, r + offset))
+                    g = max(0, min(255, g + offset))
+                    b = max(0, min(255, b + offset))
+                    
+                    dithered_palette[i] = (r << 16) | (g << 8) | b
+                    
+                except (IndexError, TypeError):
+                    # If we can't access this palette entry, we've reached the end
+                    break
+                    
             return dithered_palette
             
         except Exception as e:
@@ -236,9 +363,8 @@ class PhotoDisplay:
         try:
             self.dither_frame = (self.dither_frame + 1) % 4
             
-            # Determine brightness offset based on dither pattern
-            # Using 'light' pattern (ABAB) for now
-            pattern = self.dither_patterns['light']
+            # Use the current dithering pattern determined by image analysis
+            pattern = self.dither_patterns[self.current_dither_pattern]
             brightness_offset = 1 if pattern[self.dither_frame] else -1
             
             # Get the current bitmap and original palette
@@ -273,10 +399,10 @@ class PhotoDisplay:
         # Record time
         self.last_image_time = time.monotonic()
         
-        print(f"Image displayed. Next change in {CYCLE_TIME} seconds...")
+        print(f"Image displayed with {self.current_dither_pattern} dithering. Next change in {CYCLE_TIME} seconds...")
     
     def run(self):
-        print("Starting photo slideshow with temporal dithering...")
+        print("Starting photo slideshow with adaptive temporal dithering...")
         
         # Show first image immediately
         self.change_image()
