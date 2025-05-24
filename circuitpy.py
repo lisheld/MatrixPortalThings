@@ -25,9 +25,10 @@ except Exception as e:
 
 # List of image URLs (must be direct links to image files)
 IMAGE_URLS = [
-    
-
-    # Add more URLs here
+    "https://raw.githubusercontent.com/lisheld/MatrixPortalThings/refs/heads/main/bmp/DSC07557.bmp",
+    "https://raw.githubusercontent.com/lisheld/MatrixPortalThings/refs/heads/main/bmp/IMG_2144.bmp",
+    "https://raw.githubusercontent.com/lisheld/MatrixPortalThings/refs/heads/main/bmp/IMG_2391.bmp",
+    "https://raw.githubusercontent.com/lisheld/MatrixPortalThings/refs/heads/main/bmp/IMG_2590.bmp",
 ]
 
 # Display cycle time in seconds (start with 10 seconds for testing)
@@ -36,8 +37,8 @@ CYCLE_TIME = 10  # Change to 300 (5 minutes) once working
 class PhotoDisplay:
     def __init__(self):
         print("Initializing MatrixPortal...")
-        # Initialize matrix display with full bit depth for better colors
-        self.matrix = Matrix(width=64, height=64, bit_depth=5)  # Back to 6 for better colors
+        # Initialize matrix display with 4-bit color depth
+        self.matrix = Matrix(width=64, height=64, bit_depth=4)
         self.display = self.matrix.display
         
         # Keep auto-refresh on for smoother operation
@@ -57,6 +58,7 @@ class PhotoDisplay:
         
         self.current_image_index = 0
         self.current_group = None  # Keep track of current display group
+        self.dither_frame = 0  # Track dithering frame
         print("Initialization complete!")
         
     def show_test_pattern(self):
@@ -122,7 +124,7 @@ class PhotoDisplay:
         print("Garbage collection completed")
     
     def display_image_from_data(self, image_data):
-        """Display BMP image with optimized color handling"""
+        """Display BMP image with optimized color handling and dithering"""
         try:
             print(f"Processing image data: {len(image_data)} bytes")
             
