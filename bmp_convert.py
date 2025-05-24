@@ -23,8 +23,11 @@ def convert_and_save(img, out_path):
     # Convert to RGB mode
     img = img.convert("RGB")
     
-    # Quantize to 16 colors (4-bit) using median cut
-    img = img.quantize(colors=16, method=Image.Quantize.MEDIANCUT)
+    # Quantize to 16 colors (4-bit) with Floyd-Steinberg dithering
+    img = img.quantize(colors=16, method=Image.Quantize.MEDIANCUT, dither=Image.Dither.FLOYDSTEINBERG)
+    
+    # Convert back to RGB to ensure proper BMP format
+    img = img.convert("RGB")
     
     # Save as BMP
     img.save(out_path, format="BMP")
